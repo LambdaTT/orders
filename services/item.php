@@ -9,15 +9,15 @@ use Exception;
 
 class Item extends Service
 {
-  private const TABLE = "CTP_ORDER_ITEM";
+  private const TABLE = "ORD_ORDER_ITEM";
 
   public function create($data)
   {
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
       [
-        'id_ctp_order',
-        'id_ctp_product',
+        'id_ord_order',
+        'id_prd_product',
         'ds_product_representation',
         'qt_quantity',
       ]
@@ -27,9 +27,9 @@ class Item extends Service
     $qty   = (float) ($data['qt_quantity'] ?? 1);
     $price = 0;
 
-    if (!empty($data['id_ctp_product'])) {
+    if (!empty($data['id_prd_product'])) {
       $product = $this->getDao('CTP_PRODUCT')
-        ->filter('id_ctp_product')->equalsTo($data['id_ctp_product'])
+        ->filter('id_prd_product')->equalsTo($data['id_prd_product'])
         ->first();
       $price = (float) ($product->vl_price ?? 0);
     }
@@ -43,7 +43,7 @@ class Item extends Service
 
     // Itens que não requerem preparo iniciam direto em "Aguardando Entrega" (nr_step_order=1)
     $startOrder = (!empty($product) && ($product->do_requires_preparation ?? 'Y') !== 'Y') ? 1 : null;
-    $exec = $this->getService('bpm/wizard')->startWorkflow('order_item', $record->id_ctp_order_item, $startOrder);
+    $exec = $this->getService('bpm/wizard')->startWorkflow('order_item', $record->id_ord_order_item, $startOrder);
     $this->upd(
       ['ds_key' => $record->ds_key],
       ['id_bpm_execution' => $exec->id_bpm_execution]
@@ -79,7 +79,7 @@ class Item extends Service
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
       [
-        'id_ctp_product',
+        'id_prd_product',
         'ds_product_representation',
         'qt_quantity',
         'vl_price',
@@ -137,11 +137,11 @@ class Item extends Service
     try {
       $settings = $this->getService('settings/settings')->contextObject('attendance');
       if (($settings->kitchenAlertNewItem ?? 'N') === 'Y') {
-        $item = $this->get(['id_ctp_order_item' => $execution->id_reference_entity_id]);
+        $item = $this->get(['id_ord_order_item' => $execution->id_reference_entity_id]);
         if ($item) {
           $this->sendPushToKitchen([
             'title' => 'Novo Item em Preparo',
-            'body'  => "{$item->ds_product_representation} — Pedido #{$item->id_ctp_order}",
+            'body'  => "{$item->ds_product_representation} — Pedido #{$item->id_ord_order}",
             'link'  => '/kitchen',
           ]);
         }
@@ -156,7 +156,7 @@ class Item extends Service
 
   public function waitDeliveryInRules($execution = null)
   {
-    $record = $this->get(['id_ctp_order_item' => $execution->id_reference_entity_id]);
+    $record = $this->get(['id_ord_order_item' => $execution->id_reference_entity_id]);
     $this->getService('orders/order')->signalManager();
     $this->signalWaiter();
 
@@ -170,9 +170,9 @@ class Item extends Service
 
     // Notifica o manager quando item de pedido DELIVERY chega em "aguardando entrega"
     try {
-      $order = $this->getService('orders/order')->get(['id_ctp_order' => $record->id_ctp_order]);
+      $order = $this->getService('orders/order')->get(['id_ord_order' => $record->id_ord_order]);
       if (!empty($order) && empty($order->nr_tablenumber)) {
-        $key = "delivery_wait_delivery_notified_{$record->id_ctp_order_item}";
+        $key = "delivery_wait_delivery_notified_{$record->id_ord_order_item}";
         $alreadySent = false;
         try {
           $redis = $this->getService('infrastructure/redis');
@@ -189,9 +189,9 @@ class Item extends Service
           $this->getService('messaging/notification')->addToTeam('managers', [
             'ds_headline' => 'Item Delivery Aguardando Entrega',
             'ds_brief'    => "Item '{$record->ds_product_representation}' do pedido #"
-                           . "{$record->id_ctp_order} está aguardando entrega.",
+                           . "{$record->id_ord_order} está aguardando entrega.",
             'tx_content'  => "Item '{$record->ds_product_representation}' do pedido delivery #"
-                           . "{$record->id_ctp_order} chegou à etapa de aguardando entrega.",
+                           . "{$record->id_ord_order} chegou à etapa de aguardando entrega.",
             'do_important' => 'Y',
             'do_sendpush'  => 'Y',
           ]);
@@ -209,10 +209,10 @@ class Item extends Service
   {
     $this->getService('orders/order')->signalManager();
 
-    $item = $this->get(['id_ctp_order_item' => $execution->id_reference_entity_id]);
+    $item = $this->get(['id_ord_order_item' => $execution->id_reference_entity_id]);
     $orderItems = $this->list([
-      'id_ctp_order' => $item->id_ctp_order,
-      'id_ctp_order_item' => '$difr|' . $item->id_ctp_order_item
+      'id_ord_order' => $item->id_ord_order,
+      'id_ord_order_item' => '$difr|' . $item->id_ord_order_item
     ]);
 
     foreach ($orderItems as $orderItem)
@@ -220,8 +220,8 @@ class Item extends Service
         return;
 
     $orderExec = $this->getDao('BPM_EXECUTION')
-      ->filter('ds_reference_entity_name')->equalsTo('CTP_ORDER')
-      ->and('id_reference_entity_id')->equalsTo($item->id_ctp_order)
+      ->filter('ds_reference_entity_name')->equalsTo('ORD_ORDER')
+      ->and('id_reference_entity_id')->equalsTo($item->id_ord_order)
       ->first();
 
     Dao::flush();
@@ -240,13 +240,13 @@ class Item extends Service
     $this->signalKitchen();
     $this->signalWaiter();
 
-    $item = $this->get(['id_ctp_order_item' => $execution->id_reference_entity_id]);
+    $item = $this->get(['id_ord_order_item' => $execution->id_reference_entity_id]);
     if (empty($item))
       return;
 
     $otherOrderItems = $this->list([
-      'id_ctp_order' => $item->id_ctp_order,
-      'id_ctp_order_item' => '$difr|' . $item->id_ctp_order_item
+      'id_ord_order' => $item->id_ord_order,
+      'id_ord_order_item' => '$difr|' . $item->id_ord_order_item
     ]);
 
     foreach ($otherOrderItems as $orderItem)
@@ -254,8 +254,8 @@ class Item extends Service
         return;
 
     $orderExec = $this->getDao('BPM_EXECUTION')
-      ->filter('ds_reference_entity_name')->equalsTo('CTP_ORDER')
-      ->and('id_reference_entity_id')->equalsTo($item->id_ctp_order)
+      ->filter('ds_reference_entity_name')->equalsTo('ORD_ORDER')
+      ->and('id_reference_entity_id')->equalsTo($item->id_ord_order)
       ->first();
 
     Dao::flush();
@@ -319,21 +319,21 @@ class Item extends Service
 
           // Notificação ao manager (dedup key inclui a etapa para permitir
           // notificação independente em cada step do workflow)
-          $key = "late_alert_preparing_{$item->id_ctp_order_item}";
+          $key = "late_alert_preparing_{$item->id_ord_order_item}";
           if (!$dedupGet($key)) {
             $dedupSet($key, true, 43200);
             $mesa = !empty($item->nr_tablenumber) ? "Mesa {$item->nr_tablenumber}" : 'Delivery';
             $this->getService('messaging/notification')->addToTeam('managers', [
               'ds_headline'  => 'Item de pedido em atraso',
-              'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ctp_order}) está em preparo há {$elapsedMin} min.",
-              'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ctp_order}) ultrapassou o limite de preparo ({$preparationLimit} min).",
+              'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) está em preparo há {$elapsedMin} min.",
+              'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de preparo ({$preparationLimit} min).",
               'do_important' => 'Y',
             ]);
           }
 
           // Push para a cozinha (deduplicado separadamente)
           if ($kitchenLateAlert) {
-            $kitchenKey = "late_push_kitchen_item_{$item->id_ctp_order_item}";
+            $kitchenKey = "late_push_kitchen_item_{$item->id_ord_order_item}";
             if (!$dedupGet($kitchenKey)) {
               $dedupSet($kitchenKey, true, 43200);
               $mesa = !empty($item->nr_tablenumber) ? "Mesa {$item->nr_tablenumber}" : 'Delivery';
@@ -360,15 +360,15 @@ class Item extends Service
           $elapsedMin = (int) floor(($now - strtotime($ref)) / 60);
           if ($elapsedMin < $limit) continue;
 
-          $key = "late_alert_wait_delivery_{$item->id_ctp_order_item}";
+          $key = "late_alert_wait_delivery_{$item->id_ord_order_item}";
           if ($dedupGet($key)) continue;
           $dedupSet($key, true, 43200);
 
           $mesa = $isDelivery ? 'Delivery' : "Mesa {$item->nr_tablenumber}";
           $this->getService('messaging/notification')->addToTeam('managers', [
             'ds_headline'  => 'Item aguardando entrega em atraso',
-            'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ctp_order}) aguarda entrega há {$elapsedMin} min.",
-            'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ctp_order}) ultrapassou o limite de entrega ({$limit} min).",
+            'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) aguarda entrega há {$elapsedMin} min.",
+            'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de entrega ({$limit} min).",
             'do_important' => 'Y',
           ]);
         }
@@ -407,7 +407,7 @@ class Item extends Service
 
   private function sendPushToWaiters($orderItem)
   {
-    $order = $this->getService('orders/order')->get(['id_ctp_order' => $orderItem->id_ctp_order]);
+    $order = $this->getService('orders/order')->get(['id_ord_order' => $orderItem->id_ord_order]);
     $waiters = $this->getService('attendance/waiter')->list();
 
     foreach ($waiters as $wtr) {
@@ -419,7 +419,7 @@ class Item extends Service
 
         $msg = [
           'title' => 'Pedido Aguardando Entrega',
-          'body' => "{$orderItem->ds_product_representation} do pedido nº {$order->id_ctp_order} para a mesa {$order->nr_tablenumber} está aguardando entrega.",
+          'body' => "{$orderItem->ds_product_representation} do pedido nº {$order->id_ord_order} para a mesa {$order->nr_tablenumber} está aguardando entrega.",
           'link' => "/waiter",
         ];
 

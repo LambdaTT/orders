@@ -11,12 +11,12 @@ SELECT
   prd.do_requires_preparation,
   ord.nr_tablenumber,
   ord.tx_delivery_address
-FROM CTP_ORDER_ITEM oi
-LEFT JOIN CTP_ORDER ord 
-  ON ord.id_ctp_order = oi.id_ctp_order
+FROM ORD_ORDER_ITEM oi
+LEFT JOIN ORD_ORDER ord 
+  ON ord.id_ord_order = oi.id_ord_order
 LEFT JOIN BPM_EXECUTION ex 
-  ON ex.ds_reference_entity_name = 'CTP_ORDER_ITEM' 
-  AND ex.id_reference_entity_id = oi.id_ctp_order_item
+  ON ex.ds_reference_entity_name = 'ORD_ORDER_ITEM' 
+  AND ex.id_reference_entity_id = oi.id_ord_order_item
 LEFT JOIN BPM_STEP st 
   ON st.id_bpm_step = ex.id_bpm_step_current
 LEFT JOIN (
@@ -27,6 +27,6 @@ LEFT JOIN (
   ON trk.id_bpm_execution = ex.id_bpm_execution
   AND trk.id_bpm_step = ex.id_bpm_step_current
 LEFT JOIN CTP_PRODUCT prd 
-  ON prd.id_ctp_product = oi.id_ctp_product
+  ON prd.id_prd_product = oi.id_prd_product
 ORDER BY oi.dt_created DESC
 

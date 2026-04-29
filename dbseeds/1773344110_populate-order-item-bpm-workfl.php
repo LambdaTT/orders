@@ -14,7 +14,7 @@ class PopulateOrderItemBpmWorkfl extends Seed
       ->onField("ds_key", true)->setByFunction(fn() => "itm-" . uniqid())
       ->onField("ds_tag")->setFixedValue("order_item")
       ->onField("ds_title")->setFixedValue("Fluxo do Item do Pedido")
-      ->onField("ds_reference_entity_name")->setFixedValue("CTP_ORDER_ITEM")
+      ->onField("ds_reference_entity_name")->setFixedValue("ORD_ORDER_ITEM")
     ;
 
     $this->SeedTable("BPM_STEP", batchSize: 1)

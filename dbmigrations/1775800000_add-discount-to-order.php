@@ -8,7 +8,7 @@ class AddDiscountToOrder extends Migration
 {
   public function apply()
   {
-    $this->Table("CTP_ORDER")
+    $this->Table("ORD_ORDER")
       ->float("vl_discount")->nullable()->setDefaultValue(null)
     ;
   }

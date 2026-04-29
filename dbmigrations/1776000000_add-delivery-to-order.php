@@ -8,7 +8,7 @@ class AddDeliveryToOrder extends Migration
 {
   public function apply()
   {
-    $this->Table("CTP_ORDER")
+    $this->Table("ORD_ORDER")
       ->text("tx_delivery_address")->nullable()->setDefaultValue(null)
     ;
   }

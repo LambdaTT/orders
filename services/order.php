@@ -8,7 +8,7 @@ use SplitPHP\Database\Dao;
 
 class Order extends Service
 {
-  private const TABLE = "CTP_ORDER";
+  private const TABLE = "ORD_ORDER";
 
   public function create($data)
   {
@@ -23,9 +23,9 @@ class Order extends Service
       // Prefer the price coming from the payload; fall back to the product table
       if (!empty($item['vl_price'])) {
         $price = (float) $item['vl_price'];
-      } elseif (!empty($item['id_ctp_product'])) {
+      } elseif (!empty($item['id_prd_product'])) {
         $product = $this->getDao('CTP_PRODUCT')
-          ->filter('id_ctp_product')->equalsTo($item['id_ctp_product'])
+          ->filter('id_prd_product')->equalsTo($item['id_prd_product'])
           ->first();
         $price = (float) ($product->vl_price ?? 0);
       }
@@ -45,7 +45,7 @@ class Order extends Service
     $record = $this->getDao(self::TABLE)->insert($data);
 
     // Start the BPM workflow for this order
-    $exec = $this->getService('bpm/wizard')->startWorkflow('order', $record->id_ctp_order);
+    $exec = $this->getService('bpm/wizard')->startWorkflow('order', $record->id_ord_order);
     $this->upd(
       ['ds_key' => $record->ds_key],
       ['id_bpm_execution' => $exec->id_bpm_execution]
@@ -56,8 +56,8 @@ class Order extends Service
       try {
         $this->getService('messaging/notification')->addToTeam('managers', [
           'ds_headline' => 'Novo Pedido Delivery',
-          'ds_brief' => 'Um novo pedido delivery (#' . $record->id_ctp_order . ') acabou de chegar.',
-          'tx_content' => 'Um novo pedido delivery (#' . $record->id_ctp_order . ') acabou de chegar.',
+          'ds_brief' => 'Um novo pedido delivery (#' . $record->id_ord_order . ') acabou de chegar.',
+          'tx_content' => 'Um novo pedido delivery (#' . $record->id_ord_order . ') acabou de chegar.',
           'do_sendpush' => 'Y',
           'do_important' => 'Y'
         ]);
@@ -89,11 +89,11 @@ class Order extends Service
     // Build the order→items tree from the flat joined rows.
     $grouped = [];
     foreach ($rows as $row) {
-      $orderId = $row->id_ctp_order;
+      $orderId = $row->id_ord_order;
 
       if (!isset($grouped[$orderId])) {
         $grouped[$orderId] = (object)[
-          'id_ctp_order'         => $row->id_ctp_order,
+          'id_ord_order'         => $row->id_ord_order,
           'ds_key'               => $row->ds_key,
           'dt_created'           => $row->dt_created,
           'dt_updated'           => $row->dt_updated,
@@ -114,14 +114,14 @@ class Order extends Service
       }
 
       // Append item if the row actually has one (LEFT JOIN may yield NULLs).
-      if (!empty($row->id_ctp_order_item)) {
+      if (!empty($row->id_ord_order_item)) {
         $grouped[$orderId]->items[] = (object)[
-          'id_ctp_order_item'        => $row->id_ctp_order_item,
-          'id_ctp_order'             => $row->id_ctp_order,
+          'id_ord_order_item'        => $row->id_ord_order_item,
+          'id_ord_order'             => $row->id_ord_order,
           'ds_key'                   => $row->item_ds_key,
           'dt_created'               => $row->item_dt_created,
           'dt_updated'               => $row->item_dt_updated,
-          'id_ctp_product'           => $row->item_id_ctp_product,
+          'id_prd_product'           => $row->item_id_prd_product,
           'ds_product_representation' => $row->item_ds_product_representation,
           'qt_quantity'              => $row->item_qt_quantity,
           'vl_price'                 => $row->item_vl_price,
@@ -213,11 +213,11 @@ class Order extends Service
     $orderId = $execution->id_reference_entity_id;
     $sql = "
       SELECT COUNT(*) AS cnt
-      FROM CTP_ORDER_ITEM oi
-      JOIN BPM_EXECUTION oiex ON oiex.id_reference_entity_id = oi.id_ctp_order_item
-        AND oiex.ds_reference_entity_name = 'CTP_ORDER_ITEM'
+      FROM ORD_ORDER_ITEM oi
+      JOIN BPM_EXECUTION oiex ON oiex.id_reference_entity_id = oi.id_ord_order_item
+        AND oiex.ds_reference_entity_name = 'ORD_ORDER_ITEM'
       JOIN BPM_STEP ois ON ois.id_bpm_step = oiex.id_bpm_step_current
-      WHERE oi.id_ctp_order = {$orderId}
+      WHERE oi.id_ord_order = {$orderId}
         AND ois.nr_step_order < 2
     ";
     $result = $this->getDao(self::TABLE)->find($sql);
@@ -238,7 +238,7 @@ class Order extends Service
 
     // Signal customer app to clean up localStorage for this comanda
     try {
-      $order = $this->get(['id_ctp_order' => $execution->id_reference_entity_id]);
+      $order = $this->get(['id_ord_order' => $execution->id_reference_entity_id]);
       if (!empty($order) && !empty($order->nr_comanda)) {
         $redis = $this->getService('infrastructure/redis');
         if ($redis->isAvailable()) {
@@ -261,14 +261,14 @@ class Order extends Service
     ]);
 
     $items = $this->getService('orders/item')->list([
-      'id_ctp_order' => $execution->id_reference_entity_id,
+      'id_ord_order' => $execution->id_reference_entity_id,
       'status_tag' => '$difr|canceled'
     ]);
 
     foreach ($items as $item) {
       $itemExecution = $this->getDao('BPM_EXECUTION')
-        ->filter('ds_reference_entity_name')->equalsTo('CTP_ORDER_ITEM')
-        ->and('id_reference_entity_id')->equalsTo($item->id_ctp_order_item)
+        ->filter('ds_reference_entity_name')->equalsTo('ORD_ORDER_ITEM')
+        ->and('id_reference_entity_id')->equalsTo($item->id_ord_order_item)
         ->first();
 
       $this->getService('bpm/wizard')->transition($itemExecution->ds_key, $itemCancelTransition->ds_key);
@@ -298,7 +298,7 @@ class Order extends Service
 
     // Fetch all items of this order
     $items = $this->getService('orders/item')->list([
-      'id_ctp_order' => $orderExec->id_reference_entity_id,
+      'id_ord_order' => $orderExec->id_reference_entity_id,
     ]);
 
     // Resolve the 'cancel' transition for the order_item workflow once
@@ -313,8 +313,8 @@ class Order extends Service
       if ($item->nr_step_order >= 2) continue; // already delivered or canceled — skip
 
       $itemExec = $this->getDao('BPM_EXECUTION')
-        ->filter('ds_reference_entity_name')->equalsTo('CTP_ORDER_ITEM')
-        ->and('id_reference_entity_id')->equalsTo($item->id_ctp_order_item)
+        ->filter('ds_reference_entity_name')->equalsTo('ORD_ORDER_ITEM')
+        ->and('id_reference_entity_id')->equalsTo($item->id_ord_order_item)
         ->first();
 
       if ($itemExec) {

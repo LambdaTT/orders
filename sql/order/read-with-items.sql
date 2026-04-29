@@ -1,6 +1,6 @@
 <MainQuery>
 SELECT
-  ord.id_ctp_order,
+  ord.id_ord_order,
   ord.ds_key,
   ord.dt_created,
   ord.dt_updated,
@@ -20,11 +20,11 @@ SELECT
 
   oex.ds_key as executionKey,
 
-  oi.id_ctp_order_item,
+  oi.id_ord_order_item,
   oi.ds_key              as item_ds_key,
   oi.dt_created           as item_dt_created,
   oi.dt_updated           as item_dt_updated,
-  oi.id_ctp_product       as item_id_ctp_product,
+  oi.id_prd_product       as item_id_prd_product,
   oi.ds_product_representation as item_ds_product_representation,
   oi.qt_quantity          as item_qt_quantity,
   oi.vl_price             as item_vl_price,
@@ -44,13 +44,13 @@ SELECT
 
   prd.do_requires_preparation as item_do_requires_preparation
 
-FROM CTP_ORDER ord
-LEFT JOIN BPM_EXECUTION oex ON oex.id_reference_entity_id = ord.id_ctp_order AND oex.ds_reference_entity_name='CTP_ORDER'
+FROM ORD_ORDER ord
+LEFT JOIN BPM_EXECUTION oex ON oex.id_reference_entity_id = ord.id_ord_order AND oex.ds_reference_entity_name='ORD_ORDER'
 LEFT JOIN BPM_STEP ost ON ost.id_bpm_step = oex.id_bpm_step_current
-LEFT JOIN CTP_ORDER_ITEM oi ON oi.id_ctp_order = ord.id_ctp_order
+LEFT JOIN ORD_ORDER_ITEM oi ON oi.id_ord_order = ord.id_ord_order
 LEFT JOIN BPM_EXECUTION iex
-  ON iex.ds_reference_entity_name = 'CTP_ORDER_ITEM'
-  AND iex.id_reference_entity_id = oi.id_ctp_order_item
+  ON iex.ds_reference_entity_name = 'ORD_ORDER_ITEM'
+  AND iex.id_reference_entity_id = oi.id_ord_order_item
 LEFT JOIN BPM_STEP ist ON ist.id_bpm_step = iex.id_bpm_step_current
 LEFT JOIN (
   SELECT id_bpm_execution, id_bpm_step, MAX(dt_track) AS dt_track
@@ -59,7 +59,7 @@ LEFT JOIN (
 ) itrk
   ON itrk.id_bpm_execution = iex.id_bpm_execution
   AND itrk.id_bpm_step = iex.id_bpm_step_current
-LEFT JOIN CTP_PRODUCT prd ON prd.id_ctp_product = oi.id_ctp_product
+LEFT JOIN CTP_PRODUCT prd ON prd.id_prd_product = oi.id_prd_product
 
-ORDER BY ord.id_ctp_order DESC, oi.dt_created DESC
+ORDER BY ord.id_ord_order DESC, oi.dt_created DESC
 </MainQuery>

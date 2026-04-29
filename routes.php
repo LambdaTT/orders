@@ -29,7 +29,7 @@ class Orders extends WebService
       // If items passed in payload, create items too (BPM is started inside each service)
       if (!empty($payload['items']) && is_array($payload['items'])) {
         foreach ($payload['items'] as $item) {
-          $item['id_ctp_order'] = $record->id_ctp_order;
+          $item['id_ord_order'] = $record->id_ord_order;
           $this->getService('orders/item')->create($item);
         }
       }
