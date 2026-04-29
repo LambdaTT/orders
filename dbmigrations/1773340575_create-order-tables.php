@@ -61,7 +61,7 @@ class CreateOrderTables extends Migration
 
       ->Foreign("id_prd_product")
       ->references("id_prd_product")
-      ->atTable("CTP_PRODUCT")
+      ->atTable("PRD_PRODUCT")
       ->onUpdate(DbVocab::FKACTION_SETNULL)
       ->onDelete(DbVocab::FKACTION_SETNULL)
     ;

@@ -26,7 +26,7 @@ LEFT JOIN (
 ) trk
   ON trk.id_bpm_execution = ex.id_bpm_execution
   AND trk.id_bpm_step = ex.id_bpm_step_current
-LEFT JOIN CTP_PRODUCT prd 
+LEFT JOIN PRD_PRODUCT prd 
   ON prd.id_prd_product = oi.id_prd_product
 ORDER BY oi.dt_created DESC
 

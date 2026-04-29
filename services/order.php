@@ -24,7 +24,7 @@ class Order extends Service
       if (!empty($item['vl_price'])) {
         $price = (float) $item['vl_price'];
       } elseif (!empty($item['id_prd_product'])) {
-        $product = $this->getDao('CTP_PRODUCT')
+        $product = $this->getDao('PRD_PRODUCT')
           ->filter('id_prd_product')->equalsTo($item['id_prd_product'])
           ->first();
         $price = (float) ($product->vl_price ?? 0);

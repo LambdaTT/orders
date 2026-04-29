@@ -28,7 +28,7 @@ class Item extends Service
     $price = 0;
 
     if (!empty($data['id_prd_product'])) {
-      $product = $this->getDao('CTP_PRODUCT')
+      $product = $this->getDao('PRD_PRODUCT')
         ->filter('id_prd_product')->equalsTo($data['id_prd_product'])
         ->first();
       $price = (float) ($product->vl_price ?? 0);

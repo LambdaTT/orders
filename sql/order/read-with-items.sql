@@ -59,7 +59,7 @@ LEFT JOIN (
 ) itrk
   ON itrk.id_bpm_execution = iex.id_bpm_execution
   AND itrk.id_bpm_step = iex.id_bpm_step_current
-LEFT JOIN CTP_PRODUCT prd ON prd.id_prd_product = oi.id_prd_product
+LEFT JOIN PRD_PRODUCT prd ON prd.id_prd_product = oi.id_prd_product
 
 ORDER BY ord.id_ord_order DESC, oi.dt_created DESC
 </MainQuery>
