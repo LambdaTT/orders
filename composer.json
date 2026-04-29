@@ -1,6 +1,6 @@
 {
-  "name": "lambdatt-php/addresses",
-  "description": "A SplitPHP Framework plugin containing an address management system.",
+  "name": "lambdatt-php/orders",
+  "description": "A SplitPHP Framework plugin containing an order management system.",
   "type": "splitphp-module",
   "license": "MIT",
   "autoload": {
