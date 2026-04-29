@@ -1,0 +1,18 @@
+{
+  "name": "lambdatt-php/addresses",
+  "description": "A SplitPHP Framework plugin containing an address management system.",
+  "type": "splitphp-module",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "SplitPHP\\": "./"
+    }
+  },
+  "authors": [
+    {
+      "name": "Gabriel Valentoni Guelfi",
+      "email": "gabriel.valguelfi@gmail.com"
+    }
+  ],
+  "require": {}
+}
