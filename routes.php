@@ -1,6 +1,6 @@
 <?php
 
-namespace Cartappio\Routes;
+namespace Orders\Routes;
 
 use SplitPHP\Request;
 use SplitPHP\WebService;
@@ -84,6 +84,13 @@ class Orders extends WebService
 
       if ($rowsAffected < 1)
         return $this->response->withStatus(404);
+
+      return $this->response->withStatus(204);
+    });
+
+    $this->addEndpoint('PUT', '/v1/order-edit/?key?', function ($key, Request $req) {
+      $payload = $req->getBody();
+      $this->getService('orders/order')->editOrder($key, $payload);
 
       return $this->response->withStatus(204);
     });

@@ -5,6 +5,7 @@ SELECT
   DATE_FORMAT(ord.dt_created, '%d/%m/%Y %H:%i:%s') as dtCreated,
   CONCAT('R$ ', FORMAT(ord.vl_amount, 2, 'pt_BR')) as vlAmount,
   CONCAT('R$ ', FORMAT(ord.vl_discount, 2, 'pt_BR')) as vlDiscount,
+  (ord.vl_amount + IFNULL(ord.vl_discount, 0)) as vl_subtotal,
   st.ds_tag as status_tag,
   st.ds_title as status_title,
   ex.ds_key as executionKey

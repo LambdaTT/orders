@@ -8,12 +8,16 @@ SELECT
   st.ds_title as status_title,
   ex.ds_key as executionKey,
   trk.dt_track as dt_step_entered,
-  prd.do_requires_preparation,
+  srv.do_requires_preparation,
   ord.nr_tablenumber,
   ord.tx_delivery_address
 FROM ORD_ORDER_ITEM oi
 LEFT JOIN ORD_ORDER ord 
   ON ord.id_ord_order = oi.id_ord_order
+LEFT JOIN SRV_SERVING_VARIANT sv
+  ON sv.id_srv_serving_variant = oi.id_srv_serving_variant
+LEFT JOIN SRV_SERVING srv
+  ON srv.id_srv_serving = sv.id_srv_serving
 LEFT JOIN BPM_EXECUTION ex 
   ON ex.ds_reference_entity_name = 'ORD_ORDER_ITEM' 
   AND ex.id_reference_entity_id = oi.id_ord_order_item
@@ -26,7 +30,5 @@ LEFT JOIN (
 ) trk
   ON trk.id_bpm_execution = ex.id_bpm_execution
   AND trk.id_bpm_step = ex.id_bpm_step_current
-LEFT JOIN PRD_PRODUCT prd 
-  ON prd.id_prd_product = oi.id_prd_product
 ORDER BY oi.dt_created DESC
 

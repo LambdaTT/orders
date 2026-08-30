@@ -1,6 +1,6 @@
 <?php
 
-namespace Application\Seeds;
+namespace Orders\Seeds;
 
 use SplitPHP\DbManager\Seed;
 use SplitPHP\Database\DbVocab;

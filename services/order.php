@@ -1,10 +1,11 @@
 <?php
 
-namespace Cartappio\Services;
+namespace Orders\Services;
 
 use SplitPHP\Exceptions\FailedValidation;
 use SplitPHP\Service;
 use SplitPHP\Database\Dao;
+use SplitPHP\EventDispatcher;
 
 class Order extends Service
 {
@@ -12,22 +13,23 @@ class Order extends Service
 
   public function create($data)
   {
-    $items = $data['items'] ?? [];
+    $items  = $data['items'] ?? [];
+    $silent = !empty($data['do_silent']);
 
-    // Calculate vl_amount from items (qty × product price)
+    // Calculate vl_amount from items (qty × variant price)
     $vlAmount = 0;
     foreach ($items as $item) {
       $qty   = (float) ($item['qt_quantity'] ?? 1);
       $price = 0;
 
-      // Prefer the price coming from the payload; fall back to the product table
+      // Prefer the price coming from the payload; fall back to the variant table
       if (!empty($item['vl_price'])) {
         $price = (float) $item['vl_price'];
-      } elseif (!empty($item['id_prd_product'])) {
-        $product = $this->getDao('PRD_PRODUCT')
-          ->filter('id_prd_product')->equalsTo($item['id_prd_product'])
+      } elseif (!empty($item['id_srv_serving_variant'])) {
+        $variant = $this->getDao('SRV_SERVING_VARIANT')
+          ->filter('id_srv_serving_variant')->equalsTo($item['id_srv_serving_variant'])
           ->first();
-        $price = (float) ($product->vl_price ?? 0);
+        $price = (float) ($variant->vl_price ?? 0);
       }
 
       $vlAmount += $qty * $price;
@@ -35,7 +37,7 @@ class Order extends Service
 
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
-      ['nr_tablenumber', 'tx_delivery_address', 'nr_comanda']
+      ['nr_tablenumber', 'tx_delivery_address', 'nr_comanda', 'vl_discount']
     );
 
     $data['vl_amount']           = $vlAmount;
@@ -52,20 +54,30 @@ class Order extends Service
     );
     $record->id_bpm_execution = $exec->id_bpm_execution;
 
-    if (empty($record->nr_tablenumber)) {
-      try {
-        $this->getService('messaging/notification')->addToTeam('managers', [
-          'ds_headline' => 'Novo Pedido Delivery',
-          'ds_brief' => 'Um novo pedido delivery (#' . $record->id_ord_order . ') acabou de chegar.',
-          'tx_content' => 'Um novo pedido delivery (#' . $record->id_ord_order . ') acabou de chegar.',
-          'do_sendpush' => 'Y',
-          'do_important' => 'Y'
-        ]);
-      } catch (\Exception $e) {
-      }
+    // Notify managers of new delivery orders — skip when do_silent is set
+    // (manual orders created by the panel user don't need notifications).
+    if (!$silent && empty($record->nr_tablenumber)) {
+      $this->notifyNewOrder($record);
     }
 
     return $record;
+  }
+
+  /**
+   * Sends the "Novo Pedido Delivery" push notification to the 'managers' team.
+   */
+  public function notifyNewOrder(object $order): void
+  {
+    try {
+      $this->getService('messaging/notification')->addToTeam('managers', [
+        'ds_headline' => 'Novo Pedido Delivery',
+        'ds_brief' => 'Um novo pedido delivery (#' . $order->id_ord_order . ') acabou de chegar.',
+        'tx_content' => 'Um novo pedido delivery (#' . $order->id_ord_order . ') acabou de chegar.',
+        'do_sendpush' => 'Y',
+        'do_important' => 'Y'
+      ]);
+    } catch (\Exception $e) {
+    }
   }
 
   public function list($params = [])
@@ -77,12 +89,31 @@ class Order extends Service
 
   public function listWithItems($params = [])
   {
-    // Single query: read-with-items.sql JOINs orders with items inline.
-    // The <MainQuery> tags ensure LIMIT/OFFSET wrap the entire joined set,
-    // and item columns are aliased with `item_` prefix.
-    $rows = $this->getDao(self::TABLE)
-      ->bindParams($params)
-      ->find("orders/order/read-with-items");
+    // The SQL uses a subquery for orders with #orderFilters# placeholder.
+    // Filters (WHERE) go into the subquery via placeholder to narrow orders first.
+    // Sort/pagination go global so the framework appends LIMIT after <MainQuery>.
+    $paginationKeys = ['$page', '$limit', '$limit_multiplier', '$sort_by', '$sort_direction'];
+    $paginationParams = [];
+    $filterParams = [];
+
+    foreach ($params as $k => $v) {
+      if (in_array($k, $paginationKeys)) {
+        $paginationParams[$k] = $v;
+      } else {
+        $filterParams[$k] = $v;
+      }
+    }
+
+    $dao = $this->getDao(self::TABLE);
+
+    if (!empty($filterParams)) {
+      $dao->bindParams($filterParams, 'orderFilters');
+    }
+    if (!empty($paginationParams)) {
+      $dao->bindParams($paginationParams);
+    }
+
+    $rows = $dao->find("orders/order/read-with-items");
 
     if (empty($rows)) return [];
 
@@ -116,27 +147,28 @@ class Order extends Service
       // Append item if the row actually has one (LEFT JOIN may yield NULLs).
       if (!empty($row->id_ord_order_item)) {
         $grouped[$orderId]->items[] = (object)[
-          'id_ord_order_item'        => $row->id_ord_order_item,
-          'id_ord_order'             => $row->id_ord_order,
-          'ds_key'                   => $row->item_ds_key,
-          'dt_created'               => $row->item_dt_created,
-          'dt_updated'               => $row->item_dt_updated,
-          'id_prd_product'           => $row->item_id_prd_product,
-          'ds_product_representation' => $row->item_ds_product_representation,
-          'qt_quantity'              => $row->item_qt_quantity,
-          'vl_price'                 => $row->item_vl_price,
-          'vl_total'                 => $row->item_vl_total,
-          'dtCreated'                => $row->item_dtCreated,
-          'unitPrice'                => $row->item_unitPrice,
-          'vlTotal'                  => $row->item_vlTotal,
-          'nr_step_order'            => $row->item_nr_step_order,
-          'status_tag'               => $row->item_status_tag,
-          'status_title'             => $row->item_status_title,
-          'executionKey'             => $row->item_executionKey,
-          'dt_step_entered'          => $row->item_dt_step_entered,
-          'do_requires_preparation'  => $row->item_do_requires_preparation,
-          'nr_tablenumber'           => $row->nr_tablenumber,
-          'tx_delivery_address'      => $row->tx_delivery_address,
+          'id_ord_order_item'          => $row->id_ord_order_item,
+          'id_ord_order'               => $row->id_ord_order,
+          'ds_key'                     => $row->item_ds_key,
+          'dt_created'                 => $row->item_dt_created,
+          'dt_updated'                 => $row->item_dt_updated,
+          'id_srv_serving_variant'     => $row->item_id_srv_serving_variant,
+          'ds_serving_representation'  => $row->item_ds_serving_representation,
+          'qt_quantity'                => $row->item_qt_quantity,
+          'vl_price'                   => $row->item_vl_price,
+          'vl_total'                   => $row->item_vl_total,
+          'tx_notes'                   => $row->item_tx_notes,
+          'dtCreated'                  => $row->item_dtCreated,
+          'unitPrice'                  => $row->item_unitPrice,
+          'vlTotal'                    => $row->item_vlTotal,
+          'nr_step_order'              => $row->item_nr_step_order,
+          'status_tag'                 => $row->item_status_tag,
+          'status_title'               => $row->item_status_title,
+          'executionKey'               => $row->item_executionKey,
+          'dt_step_entered'            => $row->item_dt_step_entered,
+          'do_requires_preparation'    => $row->item_do_requires_preparation,
+          'nr_tablenumber'             => $row->nr_tablenumber,
+          'tx_delivery_address'        => $row->tx_delivery_address,
         ];
       }
     }
@@ -157,6 +189,84 @@ class Order extends Service
     return $this->getDao(self::TABLE)
       ->bindParams($params)
       ->delete();
+  }
+
+  /**
+   * Edits an existing order: updates address, replaces all items.
+   *
+   * 1. Updates the order's delivery address.
+   * 2. Removes all existing items and their BPM executions.
+   * 3. Creates new items from the payload.
+   * 4. Recalculates vl_amount.
+   */
+  public function editOrder(string $orderKey, array $data): void
+  {
+    $order = $this->get(['ds_key' => $orderKey]);
+    if (empty($order)) {
+      throw new FailedValidation("Pedido não encontrado.");
+    }
+
+    if (($order->status_tag ?? '') !== 'in_progress') {
+      throw new FailedValidation("Somente pedidos em andamento podem ser editados.");
+    }
+
+    $newItems = $data['items'] ?? [];
+
+    // 1. Update order-level fields (address, notes).
+    $this->upd(
+      ['ds_key' => $orderKey],
+      ['tx_delivery_address' => $data['tx_delivery_address'] ?? $order->tx_delivery_address]
+    );
+
+    // 2. Remove existing items and their BPM executions.
+    $this->removeOrderItems($order->id_ord_order);
+
+    // 3. Create new items (each starts its own BPM workflow).
+    foreach ($newItems as $item) {
+      $item['id_ord_order'] = $order->id_ord_order;
+      $this->getService('orders/item')->create($item);
+    }
+
+    // 4. Recalculate total from the newly created items.
+    $this->recalculateTotal($order);
+  }
+
+  /**
+   * Removes all items of an order along with their BPM executions.
+   */
+  private function removeOrderItems(int $orderId): void
+  {
+    $items = $this->getService('orders/item')->list([
+      'id_ord_order' => $orderId,
+    ]);
+
+    foreach ($items as $item) {
+      // Remove BPM execution (cascades to BPM_STEP_TRACKING via FK).
+      $this->getService('bpm/wizard')->removeExecution([
+        'ds_reference_entity_name' => 'ORD_ORDER_ITEM',
+        'id_reference_entity_id'   => $item->id_ord_order_item,
+      ]);
+    }
+
+    // Remove all item rows.
+    $this->getService('orders/item')->remove(['id_ord_order' => $orderId]);
+  }
+
+  /**
+   * Recalculates vl_amount from the current items of an order.
+   */
+  private function recalculateTotal(object $order): void
+  {
+    $items = $this->getService('orders/item')->list([
+      'id_ord_order' => $order->id_ord_order,
+    ]);
+
+    $total = 0;
+    foreach ($items as $item) {
+      $total += (float) ($item->vl_total ?? 0);
+    }
+
+    $this->upd(['ds_key' => $order->ds_key], ['vl_amount' => $total]);
   }
 
   public function upd($filters = [], $data = [])
@@ -209,22 +319,71 @@ class Order extends Service
 
   public function deliveredInRules($execution = null)
   {
-    // Check directly from DB (no DAO cache) whether any item is still pending.
+    $this->signalManager();
+
     $orderId = $execution->id_reference_entity_id;
-    $sql = "
-      SELECT COUNT(*) AS cnt
-      FROM ORD_ORDER_ITEM oi
-      JOIN BPM_EXECUTION oiex ON oiex.id_reference_entity_id = oi.id_ord_order_item
-        AND oiex.ds_reference_entity_name = 'ORD_ORDER_ITEM'
-      JOIN BPM_STEP ois ON ois.id_bpm_step = oiex.id_bpm_step_current
-      WHERE oi.id_ord_order = {$orderId}
-        AND ois.nr_step_order < 2
-    ";
-    $result = $this->getDao(self::TABLE)->find($sql);
-    $pendingCount = (int) ($result[0]->cnt ?? 0);
-    if ($pendingCount > 0) {
-      throw new FailedValidation("Há itens neste pedido que ainda não foram entregues.");
+
+    // Fetch non-delivered, non-canceled items for this order.
+    $items = $this->getService('orders/item')->list([
+      'id_ord_order' => $orderId,
+      'status_tag'   => '$notin|delivered|canceled',
+    ]);
+
+    if (empty($items)) return;
+
+    // Items still in "preparing" (step 0) must NOT be auto-skipped.
+    $this->blockIfItemsStillPreparing($items);
+
+    // Auto-deliver items that are in "waiting_delivery" (step 1).
+    $this->autoDeliverPendingItems($items);
+  }
+
+  /**
+   * Throws if any item is still in the "preparing" step (nr_step_order = 0).
+   * Those items require explicit kitchen completion before the order can
+   * be marked as delivered.
+   */
+  private function blockIfItemsStillPreparing(array $items): void
+  {
+    foreach ($items as $item) {
+      if (($item->nr_step_order ?? 999) < 1) {
+        throw new FailedValidation(
+          "Há itens neste pedido que ainda estão em preparo."
+        );
+      }
     }
+  }
+
+  /**
+   * Auto-advances every "waiting_delivery" item to "delivered" via BPM
+   * transition so the order-level "deliver" transition can proceed.
+   */
+  private function autoDeliverPendingItems(array $items): void
+  {
+    $itemWorkflow = $this->getService('bpm/workflow')->get(['ds_tag' => 'order_item']);
+    $deliverTransition = $this->getService('bpm/transition')->get([
+      'id_bpm_workflow' => $itemWorkflow->id_bpm_workflow,
+      'ds_tag'          => 'deliver',
+    ]);
+
+    foreach ($items as $item) {
+      if (($item->nr_step_order ?? 999) != 1) continue; // only waiting_delivery
+
+      $itemExec = $this->getDao('BPM_EXECUTION')
+        ->filter('ds_reference_entity_name')->equalsTo('ORD_ORDER_ITEM')
+        ->and('id_reference_entity_id')->equalsTo($item->id_ord_order_item)
+        ->first();
+
+      if ($itemExec) {
+        $this->getService('bpm/wizard')->transition(
+          $itemExec->ds_key,
+          $deliverTransition->ds_key
+        );
+      }
+    }
+
+    // Flush so the order-level transition sees up-to-date item states.
+    Dao::flush();
   }
 
   public function deliveredOutRules($execution = null)
@@ -250,10 +409,20 @@ class Order extends Service
     } catch (\Throwable $e) {
       error_log('[completedInRules] signalCustomer: ' . $e->getMessage());
     }
+
+    // Pedido concluído = pedido fechado. Notifica outros contextos (ex.: o chatbot encerra a
+    // conversa vinculada). Direção de dependência: orders emite, quem se importa escuta.
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.order.closed',
+      [(int) $execution->id_reference_entity_id, 'completed']
+    );
   }
 
   public function canceledInRules($execution = null)
   {
+    $this->signalManager();
+
     $itemWkflow = $this->getService('bpm/workflow')->get(['ds_tag' => 'order_item']);
     $itemCancelTransition = $this->getService('bpm/transition')->get([
       'id_bpm_workflow' => $itemWkflow->id_bpm_workflow,
@@ -273,6 +442,14 @@ class Order extends Service
 
       $this->getService('bpm/wizard')->transition($itemExecution->ds_key, $itemCancelTransition->ds_key);
     }
+
+    // Pedido cancelado = pedido fechado (estado terminal). Mesmo evento do concluído, com reason
+    // distinto, para quem quiser diferenciar.
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.order.closed',
+      [(int) $execution->id_reference_entity_id, 'canceled']
+    );
   }
 
   /**

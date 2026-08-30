@@ -1,6 +1,6 @@
 <?php
 
-namespace Application\Migrations;
+namespace Orders\Migrations;
 
 use SplitPHP\DbManager\Migration;
 use SplitPHP\Database\DbVocab;
@@ -18,11 +18,8 @@ class CreateOrderTables extends Migration
       ->datetime("dt_updated")->setDefaultValue(DbVocab::SQL_CURTIMESTAMP())
       ->int("id_iam_user_created")->nullable()->setDefaultValue(null)
       ->int("id_iam_user_updated")->nullable()->setDefaultValue(null)
-      ->int("nr_tablenumber")
+      ->int("nr_tablenumber")->nullable()->setDefaultValue(null)
       ->int("id_bpm_execution")->nullable()->setDefaultValue(null) // Em andamento, Entregue, Concluído, Cancelado
-      ->int('id_iam_user_delivered')->nullable()->setDefaultValue(null)
-      ->int('id_iam_user_finished')->nullable()->setDefaultValue(null)
-      ->int('id_iam_user_canceled')->nullable()->setDefaultValue(null)
       ->float("vl_amount")
 
       // Indexes:
@@ -39,15 +36,12 @@ class CreateOrderTables extends Migration
       ->int("id_iam_user_created")->nullable()->setDefaultValue(null)
       ->int("id_iam_user_updated")->nullable()->setDefaultValue(null)
       ->fk("id_ord_order")
-      ->fk("id_prd_product")->nullable()->setDefaultValue(null)
+      ->fk("id_srv_serving_variant")->nullable()->setDefaultValue(null)
       ->int("id_bpm_execution")->nullable()->setDefaultValue(null) // Prearing in Kitchen, Waiting Delivery, Delivered, Canceled
-      ->string("ds_product_representation", 255)
+      ->string("ds_serving_representation", 255)
       ->int("qt_quantity")
       ->float("vl_price")
       ->float("vl_total")
-      ->int('id_iam_user_prepared')->nullable()->setDefaultValue(null)
-      ->int('id_iam_user_delivered')->nullable()->setDefaultValue(null)
-      ->int('id_iam_user_canceled')->nullable()->setDefaultValue(null)
 
       // Indexes:
       ->Index("ds_key", DbVocab::IDX_UNIQUE)->onColumn("ds_key")
@@ -59,11 +53,11 @@ class CreateOrderTables extends Migration
       ->onUpdate(DbVocab::FKACTION_CASCADE)
       ->onDelete(DbVocab::FKACTION_CASCADE)
 
-      ->Foreign("id_prd_product")
-      ->references("id_prd_product")
-      ->atTable("PRD_PRODUCT")
-      ->onUpdate(DbVocab::FKACTION_SETNULL)
-      ->onDelete(DbVocab::FKACTION_SETNULL)
+      ->Foreign("id_srv_serving_variant")
+      ->references("id_srv_serving_variant")
+      ->atTable("SRV_SERVING_VARIANT")
+      ->onUpdate(DbVocab::FKACTION_CASCADE)
+      ->onDelete(DbVocab::FKACTION_CASCADE)
     ;
   }
 }

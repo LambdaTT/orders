@@ -1,6 +1,6 @@
 <?php
 
-namespace Cartappio\Services;
+namespace Orders\Services;
 
 use SplitPHP\Database\Dao;
 use SplitPHP\Service;
@@ -13,25 +13,49 @@ class Item extends Service
 
   public function create($data)
   {
+    // Capture fields before whitelist strips them (menu-app sends these alternate names)
+    $servingId      = $data['id_srv_serving'] ?? null;
+    $callerLabel    = $data['ds_product_representation'] ?? null;
+
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
       [
         'id_ord_order',
-        'id_prd_product',
-        'ds_product_representation',
+        'id_srv_serving_variant',
+        'ds_serving_representation',
         'qt_quantity',
+        'vl_price',
+        'tx_notes',
       ]
     );
 
-    // Always compute prices server-side from the product table
-    $qty   = (float) ($data['qt_quantity'] ?? 1);
-    $price = 0;
+    $qty     = (float) ($data['qt_quantity'] ?? 1);
+    $price   = 0;
+    $variant = null;
+    $serving = null;
 
-    if (!empty($data['id_prd_product'])) {
-      $product = $this->getDao('PRD_PRODUCT')
-        ->filter('id_prd_product')->equalsTo($data['id_prd_product'])
-        ->first();
-      $price = (float) ($product->vl_price ?? 0);
+    // Resolve variant: if only a serving ID was provided, find its default variant
+    if (empty($data['id_srv_serving_variant']) && !empty($servingId)) {
+      $variant = $this->findDefaultVariantByServing((int) $servingId);
+      if ($variant) {
+        $data['id_srv_serving_variant'] = $variant->id_srv_serving_variant;
+      }
+    }
+
+    if (!empty($data['id_srv_serving_variant'])) {
+      // Variant items: always compute prices server-side from the variant table
+      $variant = $variant ?? $this->findVariant((int) $data['id_srv_serving_variant']);
+      $price   = (float) ($variant->vl_price ?? 0);
+      $serving = $this->findParentServing($variant);
+    } else {
+      // Combo items (no variant): accept the caller-provided price
+      $price = (float) ($data['vl_price'] ?? 0);
+    }
+
+    // Auto-build ds_serving_representation when not provided by the caller
+    if (empty($data['ds_serving_representation'])) {
+      $data['ds_serving_representation'] = $this->buildRepresentationLabel($variant, $serving)
+        ?: ($callerLabel ?: '');
     }
 
     $data['vl_price']            = $price;
@@ -42,7 +66,7 @@ class Item extends Service
     $record = $this->getDao(self::TABLE)->insert($data);
 
     // Itens que não requerem preparo iniciam direto em "Aguardando Entrega" (nr_step_order=1)
-    $startOrder = (!empty($product) && ($product->do_requires_preparation ?? 'Y') !== 'Y') ? 1 : null;
+    $startOrder = (!empty($serving) && ($serving->do_requires_preparation ?? 'Y') !== 'Y') ? 1 : null;
     $exec = $this->getService('bpm/wizard')->startWorkflow('order_item', $record->id_ord_order_item, $startOrder);
     $this->upd(
       ['ds_key' => $record->ds_key],
@@ -79,12 +103,13 @@ class Item extends Service
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
       [
-        'id_prd_product',
-        'ds_product_representation',
+        'id_srv_serving_variant',
+        'ds_serving_representation',
         'qt_quantity',
         'vl_price',
         'vl_total',
-        'id_bpm_execution'
+        'id_bpm_execution',
+        'tx_notes',
       ]
     );
 
@@ -94,6 +119,91 @@ class Item extends Service
     return $this->getDao(self::TABLE)
       ->bindParams($filters)
       ->update($data);
+  }
+
+  // ─── Data Access Helpers ────────────────────────────────────
+
+  /**
+   * Fetches a serving variant by its primary key.
+   */
+  private function findVariant(int $variantId): ?object
+  {
+    return $this->getDao('SRV_SERVING_VARIANT')
+      ->filter('id_srv_serving_variant')->equalsTo($variantId)
+      ->first() ?: null;
+  }
+
+  /**
+   * Fetches the parent serving for a given variant (for requires_preparation check).
+   */
+  private function findParentServing(?object $variant): ?object
+  {
+    if (empty($variant) || empty($variant->id_srv_serving)) return null;
+
+    return $this->getDao('SRV_SERVING')
+      ->filter('id_srv_serving')->equalsTo($variant->id_srv_serving)
+      ->first() ?: null;
+  }
+
+  /**
+   * Finds the default variant for a serving, or the first available one.
+   * Used when the caller provides only id_srv_serving (e.g. menu-app).
+   */
+  private function findDefaultVariantByServing(int $servingId): ?object
+  {
+    // Try the default variant first
+    $variant = $this->getDao('SRV_SERVING_VARIANT')
+      ->filter('id_srv_serving')->equalsTo($servingId)
+      ->and('do_default')->equalsTo('Y')
+      ->first();
+
+    // Fall back to any active variant for this serving
+    if (empty($variant)) {
+      $variant = $this->getDao('SRV_SERVING_VARIANT')
+        ->filter('id_srv_serving')->equalsTo($servingId)
+        ->first();
+    }
+
+    return $variant ?: null;
+  }
+
+  /**
+   * Builds a human-readable item label from variant/serving data.
+   * E.g. "Hambúrguer — Grande" or just "Hambúrguer" for default/single variants.
+   */
+  private function buildRepresentationLabel(?object $variant, ?object $serving): string
+  {
+    if (empty($variant) && empty($serving)) return '';
+
+    $servingName = $serving->ds_name ?? '';
+    $variantName = $variant->ds_name ?? '';
+
+    // If the variant is the default ("Padrão") or matches the serving name, use just the serving name
+    if (empty($variantName) || $variantName === 'Padrão' || $variantName === $servingName) {
+      return $servingName ?: $variantName;
+    }
+
+    return $servingName ? "{$servingName} — {$variantName}" : $variantName;
+  }
+
+  /**
+   * Deducts a canceled item's value from the parent order total.
+   * Works within the current transaction without needing to re-query
+   * item BPM states.
+   */
+  private function deductItemFromOrderTotal(object $canceledItem): void
+  {
+    $order = $this->getService('orders/order')->get([
+      'id_ord_order' => $canceledItem->id_ord_order,
+    ]);
+    if (empty($order)) return;
+
+    $newTotal = max(0, (float) $order->vl_amount - (float) $canceledItem->vl_total);
+
+    $this->getService('orders/order')->upd(
+      ['ds_key' => $order->ds_key],
+      ['vl_amount' => $newTotal]
+    );
   }
 
   /**
@@ -141,12 +251,13 @@ class Item extends Service
         if ($item) {
           $this->sendPushToKitchen([
             'title' => 'Novo Item em Preparo',
-            'body'  => "{$item->ds_product_representation} — Pedido #{$item->id_ord_order}",
+            'body'  => "{$item->ds_serving_representation} — Pedido #{$item->id_ord_order}",
             'link'  => '/kitchen',
           ]);
         }
       }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+    }
   }
 
   public function preparingOutRules($execution = null)
@@ -166,38 +277,56 @@ class Item extends Service
       if (($settings->waiterAlertWaitDelivery ?? 'N') === 'Y') {
         $this->sendPushToWaiters($record);
       }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+    }
 
     // Notifica o manager quando item de pedido DELIVERY chega em "aguardando entrega"
     try {
       $order = $this->getService('orders/order')->get(['id_ord_order' => $record->id_ord_order]);
       if (!empty($order) && empty($order->nr_tablenumber)) {
-        $key = "delivery_wait_delivery_notified_{$record->id_ord_order_item}";
+        $key = "order_wait_delivery_notified_{$record->id_ord_order}";
         $alreadySent = false;
         try {
           $redis = $this->getService('infrastructure/redis');
           if ($redis->isAvailable()) {
             $alreadySent = (bool) $redis->cacheGet($key);
-            if (!$alreadySent) $redis->cacheSet($key, true, 43200);
-          } else { throw new \Exception('fallback'); }
+          } else {
+            throw new \Exception('fallback');
+          }
         } catch (\Throwable $e) {
           $stash = $this->getService('multitenancy/stash');
-          $alreadySent = (bool) $stash->get($key);
-          if (!$alreadySent) $stash->set($key, true, 43200);
+          $alreadySent = (bool) ($stash->get($key) ?? false);
         }
         if (!$alreadySent) {
+          $otherItemsFromTheSameOrder = $this->list([
+            'id_ord_order' => $record->id_ord_order,
+            'id_ord_order_item' => '$difr|' . $record->id_ord_order_item,
+          ]);
+
+          foreach ($otherItemsFromTheSameOrder as $itm)
+            if ($itm->nr_step_order < 1)
+              return;
+
+          // All items are ready — mark as notified and send.
+          try {
+            $redis = $this->getService('infrastructure/redis');
+            if ($redis->isAvailable()) $redis->cacheSet($key, true, 43200);
+          } catch (\Throwable $e) {
+            $stash = $this->getService('multitenancy/stash');
+            $stash->set($key, true, 43200);
+          }
+
           $this->getService('messaging/notification')->addToTeam('managers', [
-            'ds_headline' => 'Item Delivery Aguardando Entrega',
-            'ds_brief'    => "Item '{$record->ds_product_representation}' do pedido #"
-                           . "{$record->id_ord_order} está aguardando entrega.",
-            'tx_content'  => "Item '{$record->ds_product_representation}' do pedido delivery #"
-                           . "{$record->id_ord_order} chegou à etapa de aguardando entrega.",
+            'ds_headline' => 'Pedido Delivery Aguardando Entrega',
+            'ds_brief'    => "Pedido delivery #{$record->id_ord_order} está pronto e aguardando entrega.",
+            'tx_content'  => "Todos os itens do pedido delivery #{$record->id_ord_order} estão prontos e aguardando entrega.",
             'do_important' => 'Y',
             'do_sendpush'  => 'Y',
           ]);
         }
       }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+    }
   }
 
   public function waitDeliveryOutRules($execution = null)
@@ -243,6 +372,9 @@ class Item extends Service
     $item = $this->get(['id_ord_order_item' => $execution->id_reference_entity_id]);
     if (empty($item))
       return;
+
+    // Deduct canceled item value from order total.
+    $this->deductItemFromOrderTotal($item);
 
     $otherOrderItems = $this->list([
       'id_ord_order' => $item->id_ord_order,
@@ -295,15 +427,16 @@ class Item extends Service
       try {
         $redis = $this->getService('infrastructure/redis');
         $useRedisCache = $redis->isAvailable();
-      } catch (\Throwable $e) {}
+      } catch (\Throwable $e) {
+      }
       $stash = $useRedisCache ? null : $this->getService('multitenancy/stash');
       $now   = time();
 
       // Helper closures for deduplication get/set
-      $dedupGet = function(string $key) use ($useRedisCache, $redis, $stash) {
+      $dedupGet = function (string $key) use ($useRedisCache, $redis, $stash) {
         return $useRedisCache ? $redis->cacheGet($key) : $stash->get($key);
       };
-      $dedupSet = function(string $key, $value, ?int $ttl = null) use ($useRedisCache, $redis, $stash) {
+      $dedupSet = function (string $key, $value, ?int $ttl = null) use ($useRedisCache, $redis, $stash) {
         $useRedisCache ? $redis->cacheSet($key, $value, $ttl) : $stash->set($key, $value, $ttl);
       };
 
@@ -325,8 +458,8 @@ class Item extends Service
             $mesa = !empty($item->nr_tablenumber) ? "Mesa {$item->nr_tablenumber}" : 'Delivery';
             $this->getService('messaging/notification')->addToTeam('managers', [
               'ds_headline'  => 'Item de pedido em atraso',
-              'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) está em preparo há {$elapsedMin} min.",
-              'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de preparo ({$preparationLimit} min).",
+              'ds_brief'     => "{$mesa} — {$item->ds_serving_representation} (Pedido #{$item->id_ord_order}) está em preparo há {$elapsedMin} min.",
+              'tx_content'   => "{$mesa} — {$item->ds_serving_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de preparo ({$preparationLimit} min).",
               'do_important' => 'Y',
             ]);
           }
@@ -339,7 +472,7 @@ class Item extends Service
               $mesa = !empty($item->nr_tablenumber) ? "Mesa {$item->nr_tablenumber}" : 'Delivery';
               $this->sendPushToKitchen([
                 'title' => 'Item em Atraso!',
-                'body'  => "{$item->ds_product_representation} — {$mesa} está em preparo há {$elapsedMin} min.",
+                'body'  => "{$item->ds_serving_representation} — {$mesa} está em preparo há {$elapsedMin} min.",
                 'link'  => '/kitchen',
               ]);
             }
@@ -367,8 +500,8 @@ class Item extends Service
           $mesa = $isDelivery ? 'Delivery' : "Mesa {$item->nr_tablenumber}";
           $this->getService('messaging/notification')->addToTeam('managers', [
             'ds_headline'  => 'Item aguardando entrega em atraso',
-            'ds_brief'     => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) aguarda entrega há {$elapsedMin} min.",
-            'tx_content'   => "{$mesa} — {$item->ds_product_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de entrega ({$limit} min).",
+            'ds_brief'     => "{$mesa} — {$item->ds_serving_representation} (Pedido #{$item->id_ord_order}) aguarda entrega há {$elapsedMin} min.",
+            'tx_content'   => "{$mesa} — {$item->ds_serving_representation} (Pedido #{$item->id_ord_order}) ultrapassou o limite de entrega ({$limit} min).",
             'do_important' => 'Y',
           ]);
         }
@@ -398,11 +531,14 @@ class Item extends Service
           foreach ($devices as $device) {
             try {
               $this->getService('messaging/push')->sendToDevice(['id_iam_device' => $device->id_iam_device], $msg);
-            } catch (Throwable $t) {}
+            } catch (Throwable $t) {
+            }
           }
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) {
+        }
       }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+    }
   }
 
   private function sendPushToWaiters($orderItem)
@@ -419,7 +555,7 @@ class Item extends Service
 
         $msg = [
           'title' => 'Pedido Aguardando Entrega',
-          'body' => "{$orderItem->ds_product_representation} do pedido nº {$order->id_ord_order} para a mesa {$order->nr_tablenumber} está aguardando entrega.",
+          'body' => "{$orderItem->ds_serving_representation} do pedido nº {$order->id_ord_order} para a mesa {$order->nr_tablenumber} está aguardando entrega.",
           'link' => "/waiter",
         ];
 

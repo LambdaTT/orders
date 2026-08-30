@@ -1,6 +1,6 @@
 <?php
 
-namespace Application\Migrations;
+namespace Orders\Migrations;
 
 use SplitPHP\DbManager\Migration;
 
