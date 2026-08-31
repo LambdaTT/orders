@@ -8,11 +8,13 @@ SELECT * FROM (
     ord.nr_comanda,
     ord.id_bpm_execution,
     ord.vl_amount,
+    ord.vl_delivery_fee,
     ord.tx_delivery_address,
     IF(ord.nr_tablenumber > 0, CONCAT("MESA ", ord.nr_tablenumber), "DELIVERY") as tableNumber,
     IF(ord.nr_comanda IS NOT NULL, CONCAT("COMANDA ", ord.nr_comanda), NULL) as comandaLabel,
     DATE_FORMAT(ord.dt_created, '%d/%m/%Y %H:%i:%s') as dtCreated,
     CONCAT('R$ ', FORMAT(ord.vl_amount, 2, 'pt_BR')) as vlAmount,
+    CONCAT('R$ ', FORMAT(IFNULL(ord.vl_delivery_fee, 0), 2, 'pt_BR')) as vlDeliveryFee,
 
     ost.id_bpm_step,
     ost.ds_tag as status_tag,

@@ -40,7 +40,17 @@ class Order extends Service
       ['nr_tablenumber', 'tx_delivery_address', 'nr_comanda', 'vl_discount']
     );
 
-    $data['vl_amount']           = $vlAmount;
+    // Taxa de entrega (snapshot): pedido com endereço de entrega recebe a taxa configurada em
+    // Definições → Atendimento; retirada/mesa = 0. A taxa COMPÕE o total (vl_amount = itens + taxa)
+    // e fica registrada em vl_delivery_fee para histórico/auditoria (o breakdown do vl_amount).
+    $deliveryFee = 0.0;
+    if (!empty($data['tx_delivery_address'])) {
+      $settings    = $this->getService('settings/settings')->contextObject('attendance');
+      $deliveryFee = (float) ($settings->deliveryFee ?? 0);
+    }
+
+    $data['vl_delivery_fee']     = $deliveryFee;
+    $data['vl_amount']           = $vlAmount + $deliveryFee;
     $data['ds_key']              = 'ord-' . uniqid();
     $data['id_iam_user_created'] = $this->getService('iam/session')->getLoggedUser()?->id_iam_user;
 
@@ -265,6 +275,10 @@ class Order extends Service
     foreach ($items as $item) {
       $total += (float) ($item->vl_total ?? 0);
     }
+
+    // Invariante: vl_amount = itens + taxa de entrega. Preserva o snapshot vl_delivery_fee do
+    // pedido (não relê o setting numa edição — a taxa cobrada é a do momento da criação).
+    $total += (float) ($order->vl_delivery_fee ?? 0);
 
     $this->upd(['ds_key' => $order->ds_key], ['vl_amount' => $total]);
   }
