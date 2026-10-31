@@ -4,6 +4,7 @@ namespace Orders\Services;
 
 use SplitPHP\Database\Dao;
 use SplitPHP\Service;
+use SplitPHP\EventDispatcher;
 use Throwable;
 use Exception;
 
@@ -66,7 +67,7 @@ class Item extends Service
     $record = $this->getDao(self::TABLE)->insert($data);
 
     // Itens que não requerem preparo iniciam direto em "Aguardando Entrega" (nr_step_order=1)
-    $startOrder = (!empty($serving) && ($serving->do_requires_preparation ?? 'Y') !== 'Y') ? 1 : null;
+    $startOrder = (!empty($serving) && ($serving->do_requires_preparation ?? 'N') !== 'Y') ? 1 : null;
     $exec = $this->getService('bpm/wizard')->startWorkflow('order_item', $record->id_ord_order_item, $startOrder);
     $this->upd(
       ['ds_key' => $record->ds_key],
@@ -258,6 +259,12 @@ class Item extends Service
       }
     } catch (Throwable $e) {
     }
+
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.item.transitioned',
+      [(int) $execution->id_reference_entity_id, null, 'preparing']
+    );
   }
 
   public function preparingOutRules($execution = null)
@@ -327,11 +334,39 @@ class Item extends Service
       }
     } catch (Throwable $e) {
     }
+
+    $prevStep = $this->resolvePreviousStep($execution->id_bpm_execution, 1);
+
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.item.transitioned',
+      [(int) $execution->id_reference_entity_id, $prevStep?->ds_tag, 'waiting_delivery'],
+      true
+    );
   }
 
   public function waitDeliveryOutRules($execution = null)
   {
     $this->signalWaiter();
+  }
+
+  /**
+   * True quando nenhum OUTRO item do mesmo pedido está numa etapa anterior a "Aguardando Entrega"
+   * (nr_step_order < 1) — i.e., todos os itens já saíram do preparo. Usado para o aviso ao freguês
+   * (spec 079). O próprio item chamador já está em "Aguardando Entrega".
+   */
+  public function allSiblingsWaitingOrBeyond(object $item): bool
+  {
+    $others = $this->list([
+      'id_ord_order'      => $item->id_ord_order,
+      'id_ord_order_item' => '$difr|' . $item->id_ord_order_item,
+    ]);
+
+    foreach ($others as $other) {
+      if (($other->nr_step_order ?? 0) < 1) return false;
+    }
+
+    return true;
   }
 
   public function deliveredInRules($execution = null)
@@ -356,6 +391,12 @@ class Item extends Service
     Dao::flush();
 
     $this->getService('bpm/wizard')->transitionByTag($orderExec->ds_key, 'deliver');
+
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.item.transitioned',
+      [(int) $execution->id_reference_entity_id, 'waiting_delivery', 'delivered']
+    );
   }
 
   public function deliveredOutRules($execution = null)
@@ -393,6 +434,13 @@ class Item extends Service
     Dao::flush();
 
     $this->getService('bpm/wizard')->transitionByTag($orderExec->ds_key, 'cancel');
+
+    $prevStep = $this->resolvePreviousStep($execution->id_bpm_execution, 1);
+    EventDispatcher::dispatch(
+      fn() => true,
+      'orders.item.transitioned',
+      [(int) $execution->id_reference_entity_id, $prevStep?->ds_tag, 'canceled']
+    );
   }
 
   public function canceledOutRules($execution = null)
@@ -541,7 +589,7 @@ class Item extends Service
     }
   }
 
-  private function sendPushToWaiters($orderItem)
+  private function sendPushToWaiters(object $orderItem)
   {
     $order = $this->getService('orders/order')->get(['id_ord_order' => $orderItem->id_ord_order]);
     $waiters = $this->getService('attendance/waiter')->list();
@@ -573,5 +621,21 @@ class Item extends Service
         continue;
       }
     }
+  }
+
+  private function resolvePreviousStep(int $execId, int $numSteps): ?int
+  {
+    Dao::flush();
+
+    $track = $this->getService('bpm/step')->trackRecord(['id_bpm_execution' => $execId]);
+    if (empty($track)) return null;
+
+    $trackLength = count($track);
+    $currentStepIndex = $trackLength > 0 ? $trackLength - 1 : 0;
+    $previousStepIndex = $currentStepIndex - $numSteps;
+
+    if ($previousStepIndex < 0 || $previousStepIndex >= count($track)) return null;
+
+    return $track[$previousStepIndex]->id_bpm_step;
   }
 }

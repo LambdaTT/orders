@@ -2,6 +2,7 @@
 
 namespace Orders\Services;
 
+use SplitPHP\Exceptions\BadRequest;
 use SplitPHP\Exceptions\FailedValidation;
 use SplitPHP\Service;
 use SplitPHP\Database\Dao;
@@ -11,7 +12,10 @@ class Order extends Service
 {
   private const TABLE = "ORD_ORDER";
 
-  public function create($data)
+  /** Modalidades válidas de um pedido (spec 078). */
+  private const FULFILLMENT_TYPES = ['delivery', 'pickup', 'table'];
+
+  public function create(mixed $data)
   {
     $items  = $data['items'] ?? [];
     $silent = !empty($data['do_silent']);
@@ -37,14 +41,31 @@ class Order extends Service
 
     $data = $this->getService('utils/misc')->dataWhiteList(
       $data,
-      ['nr_tablenumber', 'tx_delivery_address', 'nr_comanda', 'vl_discount']
+      ['nr_tablenumber', 'tx_delivery_address', 'nr_comanda', 'vl_discount', 'ds_fulfillment_type']
     );
 
-    // Taxa de entrega (snapshot): pedido com endereço de entrega recebe a taxa configurada em
-    // Definições → Atendimento; retirada/mesa = 0. A taxa COMPÕE o total (vl_amount = itens + taxa)
-    // e fica registrada em vl_delivery_fee para histórico/auditoria (o breakdown do vl_amount).
+    // Modalidade do pedido (spec 078): entrega × retirada × mesa. Quando o chamador não a informa,
+    // derivamos da forma canônica (endereço→entrega, mesa→mesa, senão→retirada) — a mesma regra
+    // que classifica pedidos legados no painel do lojista.
+    $fulfillment = $this->resolveFulfillmentType($data);
+    $data['ds_fulfillment_type'] = $fulfillment;
+
+    if ($fulfillment === 'pickup') {
+      // Retirada no balcão: exige o toggle habilitado (garantia server-side) e nunca carrega
+      // endereço nem taxa.
+      if (!$this->pickupAllowed()) {
+        throw new BadRequest('A retirada no balcão não está disponível no momento.');
+      }
+      $data['tx_delivery_address'] = null;
+    } elseif ($fulfillment === 'delivery' && empty($data['tx_delivery_address'])) {
+      throw new BadRequest('Informe o endereço de entrega para concluir o pedido.');
+    }
+
+    // Taxa de entrega (snapshot): só o pedido de entrega recebe a taxa configurada em Definições →
+    // Atendimento; retirada/mesa = 0. A taxa COMPÕE o total (vl_amount = itens + taxa) e fica
+    // registrada em vl_delivery_fee para histórico/auditoria (o breakdown do vl_amount).
     $deliveryFee = 0.0;
-    if (!empty($data['tx_delivery_address'])) {
+    if ($fulfillment === 'delivery' && !empty($data['tx_delivery_address'])) {
       $settings    = $this->getService('settings/settings')->contextObject('attendance');
       $deliveryFee = (float) ($settings->deliveryFee ?? 0);
     }
@@ -71,6 +92,33 @@ class Order extends Service
     }
 
     return $record;
+  }
+
+  /**
+   * Resolve a modalidade do pedido: usa a informada (quando válida) ou deriva da forma canônica —
+   * endereço→'delivery', mesa→'table', senão→'pickup'. Mantém compat com chamadores que ainda não
+   * enviam ds_fulfillment_type e serve de backfill para a classificação de exibição.
+   */
+  private function resolveFulfillmentType(array $data): string
+  {
+    $type = $data['ds_fulfillment_type'] ?? null;
+    if (in_array($type, self::FULFILLMENT_TYPES, true)) {
+      return $type;
+    }
+
+    if (!empty($data['tx_delivery_address'])) return 'delivery';
+    if ((int) ($data['nr_tablenumber'] ?? 0) > 0) return 'table';
+    return 'pickup';
+  }
+
+  /**
+   * Retirada habilitada em Definições → Atendimento (spec 078). Ausente = habilitado: o default do
+   * toggle é 'Y' e só um 'N' explícito bloqueia (paridade com o chatbot, que já aceita retirada).
+   */
+  private function pickupAllowed(): bool
+  {
+    $settings = $this->getService('settings/settings')->contextObject('attendance');
+    return ($settings->allowPickup ?? 'Y') !== 'N';
   }
 
   /**
@@ -150,6 +198,7 @@ class Order extends Service
           'status_title'         => $row->status_title,
           'executionKey'         => $row->executionKey,
           'tx_delivery_address'  => $row->tx_delivery_address,
+          'ds_fulfillment_type'  => $row->ds_fulfillment_type,
           'items'                => [],
         ];
       }
@@ -324,6 +373,12 @@ class Order extends Service
   public function inProgressInRules($execution = null)
   {
     $this->signalManager();
+
+     EventDispatcher::dispatch(
+      fn() => true,
+      'orders.order.transitioned',
+      [(int) $execution->id_reference_entity_id, null, 'in_progress']
+    );
   }
 
   public function inProgressOutRules($execution = null)
@@ -343,13 +398,20 @@ class Order extends Service
       'status_tag'   => '$notin|delivered|canceled',
     ]);
 
-    if (empty($items)) return;
+    if (!empty($items)) {
+      // Items still in "preparing" (step 0) must NOT be auto-skipped — aborts the transition.
+      $this->blockIfItemsStillPreparing($items);
 
-    // Items still in "preparing" (step 0) must NOT be auto-skipped.
-    $this->blockIfItemsStillPreparing($items);
+      // Auto-deliver items that are in "waiting_delivery" (step 1).
+      $this->autoDeliverPendingItems($items);
+    }
 
-    // Auto-deliver items that are in "waiting_delivery" (step 1).
-    $this->autoDeliverPendingItems($items);
+     EventDispatcher::dispatch(
+      fn() => true,
+      'orders.order.transitioned',
+      [(int) $execution->id_reference_entity_id, 'in_progress', 'delivered'],
+      true
+    );
   }
 
   /**
@@ -431,6 +493,7 @@ class Order extends Service
       'orders.order.closed',
       [(int) $execution->id_reference_entity_id, 'completed']
     );
+
   }
 
   public function canceledInRules($execution = null)
@@ -462,8 +525,10 @@ class Order extends Service
     EventDispatcher::dispatch(
       fn() => true,
       'orders.order.closed',
-      [(int) $execution->id_reference_entity_id, 'canceled']
+      [(int) $execution->id_reference_entity_id, 'canceled'],
+      true
     );
+
   }
 
   /**

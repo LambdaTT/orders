@@ -10,6 +10,7 @@ SELECT * FROM (
     ord.vl_amount,
     ord.vl_delivery_fee,
     ord.tx_delivery_address,
+    ord.ds_fulfillment_type,
     IF(ord.nr_tablenumber > 0, CONCAT("MESA ", ord.nr_tablenumber), "DELIVERY") as tableNumber,
     IF(ord.nr_comanda IS NOT NULL, CONCAT("COMANDA ", ord.nr_comanda), NULL) as comandaLabel,
     DATE_FORMAT(ord.dt_created, '%d/%m/%Y %H:%i:%s') as dtCreated,

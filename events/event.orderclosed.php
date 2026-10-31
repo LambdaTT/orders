@@ -3,6 +3,7 @@
 namespace Orders\Events;
 
 use SplitPHP\Event;
+use SplitPHP\Helpers;
 
 /**
  * Class OrderClosed
@@ -39,6 +40,9 @@ class OrderClosed extends Event
    */
   public function __construct(int $orderId, string $reason)
   {
+    $evtName = $this->getName();
+    if($this->debugMode) Helpers::Log()->common('event_dispatcher', "Event '{$evtName}' intantiated with orderId: {$orderId}, reason: {$reason}");
+    
     $this->orderId = $orderId;
     $this->reason  = $reason;
   }
