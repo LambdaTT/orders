@@ -75,20 +75,34 @@ class Order extends Service
     $data['ds_key']              = 'ord-' . uniqid();
     $data['id_iam_user_created'] = $this->getService('iam/session')->getLoggedUser()?->id_iam_user;
 
-    $record = $this->getDao(self::TABLE)->insert($data);
+    // Anuncia a criação ANTES de qualquer efeito colateral. A persistência (insert + BPM +
+    // notificação) é a função despachadora: um listener de aplicação pode VETAR a criação (ex.:
+    // o guard de horário de funcionamento) chamando stopPropagation() — aí a despachadora não
+    // roda (nenhum pedido, nenhum push) e o veto chega via $gate. O módulo fica agnóstico à
+    // regra: só sabe que "pode ser vetado". O throw abaixo sobe ao kernel (não é capturado pelo
+    // domínio) → rollback automático antes do flush → uma única resposta.
+    $gate = (object) ['blocked' => false, 'reason' => null];
+    $record = null;
+    EventDispatcher::dispatch(function () use (&$record, $data, $silent) {
+      $record = $this->getDao(self::TABLE)->insert($data);
 
-    // Start the BPM workflow for this order
-    $exec = $this->getService('bpm/wizard')->startWorkflow('order', $record->id_ord_order);
-    $this->upd(
-      ['ds_key' => $record->ds_key],
-      ['id_bpm_execution' => $exec->id_bpm_execution]
-    );
-    $record->id_bpm_execution = $exec->id_bpm_execution;
+      // Start the BPM workflow for this order
+      $exec = $this->getService('bpm/wizard')->startWorkflow('order', $record->id_ord_order);
+      $this->upd(
+        ['ds_key' => $record->ds_key],
+        ['id_bpm_execution' => $exec->id_bpm_execution]
+      );
+      $record->id_bpm_execution = $exec->id_bpm_execution;
 
-    // Notify managers of new delivery orders — skip when do_silent is set
-    // (manual orders created by the panel user don't need notifications).
-    if (!$silent && empty($record->nr_tablenumber)) {
-      $this->notifyNewOrder($record);
+      // Notify managers of new delivery orders — skip when do_silent is set
+      // (manual orders created by the panel user don't need notifications).
+      if (!$silent && empty($record->nr_tablenumber)) {
+        $this->notifyNewOrder($record);
+      }
+    }, 'orders.order.creating', [$data, $gate]);
+
+    if ($gate->blocked) {
+      throw new FailedValidation($gate->reason ?? 'Não é possível criar o pedido no momento.');
     }
 
     return $record;
@@ -374,6 +388,10 @@ class Order extends Service
   {
     $this->signalManager();
 
+    // Commit the step change before dispatching so 'orders.order.transitioned' listeners observe
+    // the order already in its new state.
+    Dao::flush();
+
      EventDispatcher::dispatch(
       fn() => true,
       'orders.order.transitioned',
@@ -488,6 +506,9 @@ class Order extends Service
 
     // Pedido concluído = pedido fechado. Notifica outros contextos (ex.: o chatbot encerra a
     // conversa vinculada). Direção de dependência: orders emite, quem se importa escuta.
+    // Flush antes de despachar: os listeners de 'orders.order.closed' veem o pedido já fechado.
+    Dao::flush();
+
     EventDispatcher::dispatch(
       fn() => true,
       'orders.order.closed',
@@ -521,7 +542,9 @@ class Order extends Service
     }
 
     // Pedido cancelado = pedido fechado (estado terminal). Mesmo evento do concluído, com reason
-    // distinto, para quem quiser diferenciar.
+    // distinto, para quem quiser diferenciar. Flush antes de despachar (item/pedido já cancelados).
+    Dao::flush();
+
     EventDispatcher::dispatch(
       fn() => true,
       'orders.order.closed',

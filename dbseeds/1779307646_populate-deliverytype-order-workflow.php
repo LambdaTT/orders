@@ -4,11 +4,23 @@ namespace Orders\Seeds;
 
 use SplitPHP\DbManager\Seed;
 use SplitPHP\Database\DbVocab;
+use SplitPHP\Database\Database;
+use SplitPHP\Database\Sqlobj;
 
 class PopulateDeliveryTypeOrderBpmWorkflow extends Seed
 {
   public function apply()
   {
+    // Idempotency guard: only seed the "delivery" workflow when one does not already exist.
+    // An application may intentionally not use a separate delivery workflow (relying solely on the
+    // "order" workflow), or may have removed it — re-seeding would reintroduce an unwanted/duplicate
+    // "Fluxo da Entrega". Guarding on the existence of the ds_tag='delivery' workflow keeps this seed
+    // safe to re-apply (and a no-op when the seed-tracking row is cleared while the workflow stands).
+    $existing = Database::getCnn('main')->runsql(
+      new Sqlobj("SELECT id_bpm_workflow FROM `BPM_WORKFLOW` WHERE ds_tag = 'delivery' LIMIT 1", 'BPM_WORKFLOW')
+    );
+    if (!empty($existing)) return;
+
     // ORDER WORKFLOW
     $this->SeedTable("BPM_WORKFLOW", batchSize: 1)
       ->onField("ds_key", true)->setByFunction(fn() => "wfl-" . uniqid())

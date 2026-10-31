@@ -8,7 +8,7 @@ class AddFulfillmentToOrder extends Migration
 {
   public function apply()
   {
-    // Modalidade explícita do pedido (spec 078): espelha CTP_DRAFT_ORDER.ds_fulfillment_type.
+    // Modalidade explícita do pedido (spec 078): delivery | pickup | table.
     // 'delivery' | 'pickup' | 'table'. Nullable p/ pedidos legados — a classificação desses
     // (retirada vinda do chatbot, sem endereço nem mesa) é feita no read-path do painel e na
     // derivação de orders/order->create (backfill de dados não é suportado pela DSL declarativa
